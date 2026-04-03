@@ -1,14 +1,1 @@
-.DS_Store
-.env
-/node_modules/
-/coverage/
-
-# React Router
-/.react-router/
-/build/
-
-# Playwright
-/test-results/
-/playwright-report/
-/blob-report/
-/playwright/.cache/
+node_modules/
