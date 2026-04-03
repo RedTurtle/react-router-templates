@@ -1,0 +1,138 @@
+stages:
+  - test
+  - build
+  - publish
+
+# ---------------------------------------------------------------------------
+# Shared base for Node jobs (Alpine)
+# ---------------------------------------------------------------------------
+.node_base:
+  image: node:24-alpine
+  cache:
+    key:
+      files:
+        - pnpm-lock.yaml
+    paths:
+      - .pnpm-store/
+  before_script:
+    - corepack enable
+    - corepack prepare pnpm@10.33.0 --activate
+    - pnpm config set store-dir .pnpm-store
+
+# Shared rules anchors
+.rules_test: &rules_test
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+
+.rules_build: &rules_build
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+
+.rules_publish: &rules_publish
+  rules:
+    - if: $CI_COMMIT_TAG
+
+# ---------------------------------------------------------------------------
+# STAGE: test
+# ---------------------------------------------------------------------------
+test:unit:
+  extends: .node_base
+  stage: test
+  <<: *rules_test
+  script:
+    - pnpm install --frozen-lockfile
+    - pnpm test
+
+test:e2e:
+  stage: test
+  image: mcr.microsoft.com/playwright:v1.59.1-noble
+  cache:
+    key:
+      files:
+        - pnpm-lock.yaml
+    paths:
+      - .pnpm-store/
+  <<: *rules_test
+  before_script:
+    - corepack enable
+    - corepack prepare pnpm@10.33.0 --activate
+    - pnpm config set store-dir .pnpm-store
+  script:
+    - pnpm install --frozen-lockfile
+    - pnpm test:e2e
+  artifacts:
+    when: on_failure
+    paths:
+      - playwright-report/
+      - test-results/
+    expire_in: 7 days
+
+# ---------------------------------------------------------------------------
+# STAGE: build
+# ---------------------------------------------------------------------------
+build:app:
+  extends: .node_base
+  stage: build
+  <<: *rules_build
+  script:
+    - pnpm install --frozen-lockfile
+    - pnpm build
+    - pnpm install --frozen-lockfile --prod
+  artifacts:
+    paths:
+      - build/
+      - node_modules/
+      - package.json
+      - pnpm-lock.yaml
+    expire_in: 1 hour
+
+build:docker:
+  stage: build
+  image: docker:27
+  services:
+    - docker:27-dind
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+  <<: *rules_build
+  before_script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+  script:
+    - docker build -t "$CI_REGISTRY_IMAGE:latest" .
+    - docker push "$CI_REGISTRY_IMAGE:latest"
+
+# ---------------------------------------------------------------------------
+# STAGE: publish
+# ---------------------------------------------------------------------------
+publish:tarball:
+  extends: .node_base
+  stage: publish
+  <<: *rules_publish
+  needs:
+    - build:app
+  script:
+    - tar -czf "${CI_PROJECT_NAME}-${CI_COMMIT_TAG}.tar.gz" build/ node_modules/ package.json pnpm-lock.yaml
+    - |
+      curl --fail-with-body \
+           --header "JOB-TOKEN: $CI_JOB_TOKEN" \
+           --upload-file "${CI_PROJECT_NAME}-${CI_COMMIT_TAG}.tar.gz" \
+           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${CI_PROJECT_NAME}/${CI_COMMIT_TAG}/${CI_PROJECT_NAME}-${CI_COMMIT_TAG}.tar.gz"
+
+publish:docker:
+  stage: publish
+  image: docker:27
+  services:
+    - docker:27-dind
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+  <<: *rules_publish
+  needs:
+    - build:docker
+  before_script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+  script:
+    - docker pull "$CI_REGISTRY_IMAGE:latest"
+    - docker tag "$CI_REGISTRY_IMAGE:latest" "$CI_REGISTRY_IMAGE:$CI_COMMIT_TAG"
+    - docker push "$CI_REGISTRY_IMAGE:$CI_COMMIT_TAG"
