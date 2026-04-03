@@ -11,11 +11,11 @@ export default defineConfig([
     plugins: { js },
     extends: ['js/recommended'],
     languageOptions: { globals: { ...globals.browser, ...globals.node } },
-    // settings: {
-    //   react: {
-    //     version: 'detect',
-    //   },
-    // },
+    settings: {
+      react: {
+        version: 'detect',
+      },
+    },
   },
   tseslint.configs.recommended,
   pluginReact.configs.flat.recommended,
